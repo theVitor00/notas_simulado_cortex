@@ -40,10 +40,20 @@ def open_folder(path):
     except Exception as e:
         messagebox.showerror("Erro ao Abrir Pasta", f"Não foi possível abrir o diretório: {e}")
 
+def column_letter_to_index(column_letter):
+    """Converte uma letra de coluna Excel (A, B, C...) para o índice baseado em zero."""
+    if not isinstance(column_letter, str) or not column_letter.isalpha() or len(column_letter) != 1:
+        raise ValueError("A letra da coluna deve ser uma única letra alfabética.")
+    
+    # Converte para maiúscula para padronização
+    column_letter = column_letter.upper()
+    
+    # 'A' é 0, 'B' é 1, ..., 'Z' é 25
+    return ord(column_letter) - ord('A')
 
 # --- Lógica de Processamento do Excel ---
 
-def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, status_label, not_found_text_area, root):
+def process_excel(excel_path, prova_nome, serie_selecionada, column_note_index, progress_bar, status_label, not_found_text_area, root):
     """
     Processa o arquivo Excel, compara os dados e gera o arquivo TXT.
     Executado em uma thread separada.
@@ -56,7 +66,9 @@ def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, statu
         status_label.config(text="Carregando arquivo Excel...")
         progress_bar['value'] = 0
         root.update_idletasks() # Atualiza a GUI
+        not_found_text_area.config(state='normal') # Habilita para escrita na thread
         not_found_text_area.delete(1.0, tk.END) # Limpa a área de alunos não encontrados
+        not_found_text_area.config(state='disabled') # Desabilita novamente
 
         if not os.path.exists(excel_path):
             messagebox.showerror("Erro de Arquivo", f"Arquivo Excel não encontrado: '{excel_path}'. Por favor, verifique o caminho.")
@@ -84,7 +96,8 @@ def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, statu
         root.update_idletasks()
 
         # 2. Pré-processar DataFrames
-        df_serie = df_serie[[0, 13]].copy()
+        # Agora usando column_note_index
+        df_serie = df_serie[[0, column_note_index]].copy()
         df_serie.columns = ['NomeAlunoSerie', 'Nota']
         df_serie['NomeAlunoSerie'] = df_serie['NomeAlunoSerie'].astype(str).str.strip().str.upper()
         df_serie['Nota'] = df_serie['Nota'].astype(str).str.replace(',', '.', regex=False)
@@ -153,7 +166,8 @@ def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, statu
                 matricula = potential_matches.iloc[0]['Matricula']
 
                 if matched_name_lista_std == nome_aluno_serie_std:
-                    matched_alunos.append(f"{matricula}\t{nota_serie:.1f}")
+                    nota_formatada = f"{nota_serie:.1f}".replace('.',',')
+                    matched_alunos.append(f"{matricula}\t{nota_formatada}")
                     found_match_for_student = True
                 elif nome_aluno_serie_std.startswith(matched_name_lista_std) and len(nome_aluno_serie_std) > len(matched_name_lista_std):
                     matched_alunos.append(f"{matricula}\t{nota_serie:.1f}")
@@ -256,14 +270,18 @@ def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, statu
                 return
             
             # Exibir alunos não encontrados na área de texto da GUI
+            not_found_text_area.config(state='normal')
             not_found_text_area.insert(tk.END, "\nAlunos Não Encontrados:\n")
             not_found_text_area.insert(tk.END, "-------------------------\n")
             for aluno in not_found_alunos:
                 not_found_text_area.insert(tk.END, aluno + "\n")
             not_found_text_area.see(tk.END) # Rola para o final
+            not_found_text_area.config(state='disabled')
         else:
+            not_found_text_area.config(state='normal')
             not_found_text_area.insert(tk.END, "\nNenhum aluno não encontrado neste processamento.\n")
             not_found_text_area.see(tk.END)
+            not_found_text_area.config(state='disabled')
 
 
         # Mensagem de conclusão modificada
@@ -271,11 +289,11 @@ def process_excel(excel_path, prova_nome, serie_selecionada, progress_bar, statu
         final_message += f"Arquivo principal '{output_file_name_main}' gerado em '{destination_path}'.\n"
 
         if has_partial_matches:
-            final_message += f"\n**ATENÇÃO:** Houve coincidências parciais de nomes. Verifique o arquivo '{output_file_name_partial}' para revisão."
+            final_message += f"\nATENÇÃO: Houve coincidências parciais de nomes. Verifique o arquivo '{output_file_name_partial}' para revisão."
         if has_occurrences:
-            final_message += f"\n**ATENÇÃO:** Houve coincidências ambíguas de nomes. Verifique o arquivo '{output_file_name_ambiguities}' para revisão manual."
+            final_message += f"\nATENÇÃO: Houve coincidências ambíguas de nomes. Verifique o arquivo '{output_file_name_ambiguities}' para revisão manual."
         if not_found_alunos:
-            final_message += f"\n**ATENÇÃO:** Alunos não encontrados. Verifique a lista abaixo ou o arquivo '{output_file_name_not_found}' para revisão."
+            final_message += f"\nATENÇÃO: Alunos não encontrados. Verifique a lista abaixo ou o arquivo '{output_file_name_not_found}' para revisão."
 
         if not has_partial_matches and not has_occurrences and not not_found_alunos:
              final_message += "\nNenhuma ocorrência ou divergência de nomes foi encontrada."
@@ -313,8 +331,18 @@ class ExcelProcessorApp:
         self.prova_nome = tk.StringVar()
         self.serie_selecionada = tk.StringVar()
         self.series_opcoes = ["1ª Série", "2ª Série", "3ª Série"]
+        self.coluna_nota = tk.StringVar() # Novo StringVar para a coluna da nota
 
         self.create_widgets()
+        # Inicializa o monitoramento para validação
+        self.coluna_nota.trace_add("write", self._validate_column_input)
+        self.excel_file_path.trace_add("write", self._check_all_inputs_valid)
+        self.prova_nome.trace_add("write", self._check_all_inputs_valid)
+        self.serie_selecionada.trace_add("write", self._check_all_inputs_valid)
+        
+        # Chama a validação inicial para desabilitar o botão se os campos estiverem vazios
+        self._check_all_inputs_valid()
+
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding=20)
@@ -345,6 +373,16 @@ class ExcelProcessorApp:
         self.serie_dropdown = ttk.OptionMenu(serie_frame, self.serie_selecionada, self.series_opcoes[0], *self.series_opcoes)
         self.serie_dropdown.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # Novo campo para a Coluna da Nota
+        coluna_nota_frame = ttk.Frame(main_frame)
+        coluna_nota_frame.pack(pady=5, fill=tk.X)
+        ttk.Label(coluna_nota_frame, text="Coluna da Nota (ex: 'N' ou 'P'):").pack(side=tk.LEFT, padx=(0, 10))
+        self.coluna_nota_entry = ttk.Entry(coluna_nota_frame, textvariable=self.coluna_nota, width=5)
+        self.coluna_nota_entry.pack(side=tk.LEFT, padx=(0, 10))
+        # Definir estilo inicial para o campo de input da coluna
+        self.coluna_nota_entry.config(bootstyle="default") # Garante um estilo padrão
+
+
         excel_frame = ttk.Frame(main_frame)
         excel_frame.pack(pady=10, fill=tk.X)
 
@@ -370,6 +408,30 @@ class ExcelProcessorApp:
         self.not_found_text_area.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
         self.not_found_text_area.config(state='disabled') # Torna a caixa de texto somente leitura
 
+    def _validate_column_input(self, *args):
+        """Valida a entrada da coluna da nota (deve ser uma única letra)."""
+        value = self.coluna_nota.get().strip()
+        is_valid = bool(value and value.isalpha() and len(value) == 1)
+
+        if is_valid:
+            self.coluna_nota_entry.config(bootstyle="default") # Volta ao estilo normal
+        else:
+            self.coluna_nota_entry.config(bootstyle="danger") # Estilo de erro (vermelho)
+        
+        self._check_all_inputs_valid() # Re-verifica o botão de processamento
+
+    def _check_all_inputs_valid(self, *args):
+        """Verifica se todos os inputs necessários são válidos para habilitar o botão de processamento."""
+        excel_ok = bool(self.excel_file_path.get())
+        prova_ok = bool(self.prova_nome.get().strip())
+        serie_ok = bool(self.serie_selecionada.get())
+        coluna_ok = bool(self.coluna_nota.get().strip() and self.coluna_nota.get().strip().isalpha() and len(self.coluna_nota.get().strip()) == 1)
+
+        if excel_ok and prova_ok and serie_ok and coluna_ok:
+            self.start_button.config(state=tk.NORMAL)
+        else:
+            self.start_button.config(state=tk.DISABLED)
+
     def browse_excel_file(self):
         file_path = filedialog.askopenfilename(
             title="Selecione o arquivo Excel",
@@ -382,21 +444,24 @@ class ExcelProcessorApp:
             self.not_found_text_area.config(state='normal')
             self.not_found_text_area.delete(1.0, tk.END) # Limpa área ao selecionar novo arquivo
             self.not_found_text_area.config(state='disabled')
-
+            self._check_all_inputs_valid() # Re-verifica o botão
 
     def start_processing_thread(self):
         excel_path = self.excel_file_path.get()
         prova_nome = self.prova_nome.get().strip()
         serie_selecionada = self.serie_selecionada.get()
+        coluna_nota_letra = self.coluna_nota.get().strip()
 
-        if not excel_path:
-            messagebox.showwarning("Entrada Inválida", "Por favor, selecione o arquivo Excel.")
+        # Re-validação final (redundante, mas seguro)
+        if not (excel_path and prova_nome and serie_selecionada and coluna_nota_letra and coluna_nota_letra.isalpha() and len(coluna_nota_letra) == 1):
+            messagebox.showwarning("Entrada Inválida", "Por favor, preencha e valide todos os campos corretamente.")
             return
-        if not prova_nome:
-            messagebox.showwarning("Entrada Inválida", "Por favor, insira o Nome da Prova.")
-            return
-        if not serie_selecionada:
-            messagebox.showwarning("Entrada Inválida", "Por favor, selecione a Série.")
+        
+        try:
+            coluna_nota_index = column_letter_to_index(coluna_nota_letra)
+        except ValueError as e:
+            messagebox.showerror("Erro de Coluna", str(e))
+            self.status_label.config(text="Erro: Coluna da nota inválida.")
             return
 
         self.start_button.config(state=tk.DISABLED)
@@ -406,7 +471,7 @@ class ExcelProcessorApp:
 
         process_thread = threading.Thread(
             target=process_excel,
-            args=(excel_path, prova_nome, serie_selecionada,
+            args=(excel_path, prova_nome, serie_selecionada, coluna_nota_index,
                   self.progress_bar, self.status_label, self.not_found_text_area, self.root)
         )
         process_thread.start()
@@ -424,7 +489,7 @@ class ExcelProcessorApp:
         """Exibe a janela de ajuda com explicações e botão para abrir pasta."""
         help_window = tk.Toplevel(self.root)
         help_window.title("Ajuda - Processador de Notas")
-        help_window.geometry("500x350")
+        help_window.geometry("500x380") # Aumenta um pouco a altura para o novo item
         help_window.resizable(False, False)
         help_window.transient(self.root) # Torna a janela de ajuda filha da principal
         help_window.grab_set() # Bloqueia interações com a janela principal
@@ -434,20 +499,19 @@ class ExcelProcessorApp:
 
         ttk.Label(help_frame, text="Como Usar o Processador de Notas", font=("Helvetica", 14, "bold")).pack(pady=10)
 
-        # TEXTO AJUSTADO PARA NÃO TER MARCAÇÕES MARKDOWN
         help_text = (
             "1. Nome da Prova: Digite um nome para a prova. Ele será usado para nomear os arquivos de saída (ex: 'Avaliação Final').\n\n"
             "2. Série: Selecione a série correspondente à planilha de notas no arquivo Excel (ex: '1ª Série').\n\n"
-            "3. Arquivo Excel: Clique em 'Procurar' para selecionar o arquivo Excel (.xlsx ou .xls) com as notas e a lista de alunos.\n\n"
-            "4. Iniciar Processamento: Clique neste botão para iniciar a análise e a geração dos arquivos TXT.\n\n"
+            "3. Coluna da Nota: Digite a letra da coluna (ex: 'N' ou 'P') onde as notas estão localizadas na planilha da série. Apenas uma letra é aceita.\n\n"
+            "4. Arquivo Excel: Clique em 'Procurar' para selecionar o arquivo Excel (.xlsx ou .xls) com as notas e a lista de alunos.\n\n"
+            "5. Iniciar Processamento: Clique neste botão para iniciar a análise e a geração dos arquivos TXT.\n\n"
             "Arquivos Gerados:\n"
             "- {Série} - {Prova}.txt: Contém Matrícula e Nota dos alunos encontrados.\n"
             "- ocorrencias {Série} - {Prova}.txt: Lista alunos com nomes ambíguos que precisam de revisão manual.\n"
             "- Coincidencias parciais {Série} - {Prova}.txt: Lista alunos com nomes parcialmente correspondentes (ex: truncados).\n"
             "- alunos_nao_encontrados.txt: Lista alunos da planilha de série que não foram encontrados na 'Lista de Alunos'."
         )
-        # Usamos ScrolledText para o texto de ajuda caso ele seja longo
-        help_display = scrolledtext.ScrolledText(help_frame, width=60, height=12, wrap=tk.WORD, font=("TkDefaultFont", 9))
+        help_display = scrolledtext.ScrolledText(help_frame, width=60, height=14, wrap=tk.WORD, font=("TkDefaultFont", 9))
         help_display.insert(tk.END, help_text)
         help_display.config(state='disabled') # Torna a caixa de texto somente leitura
         help_display.pack(pady=10, fill=tk.BOTH, expand=True)

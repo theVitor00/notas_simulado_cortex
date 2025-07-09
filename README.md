@@ -32,3 +32,9 @@ O arquivo de saída é um `.txt` com o título que é uma combinação entre a s
 
 
 > Mais informações serão adicionadas conforme novas atualizações forem sendo feitas
+
+## 4. Atualizações
+
+### v 1.1 - 09/07/2025
+- Adicionada funcionalidade para escolher em qual coluna da planilha de origem dos dados se encontram as notas
+- Modificação da formatação da nota no arquivo de saída
